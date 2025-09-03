@@ -15,8 +15,10 @@ export default function AudioUploader() {
     setLoading(true); setError(null)
     try {
       // 1) Upload raw audio to Vercel Blob (handles large files, resumable)
-      const { url } = await upload(file.name, file, { access: "public" })
-
+      const { url } = await upload(file.name, file, {
+        access: "public",
+        handleUploadUrl: "/api/upload",
+      });
       // 2) Tell our API to process the Blob URL
       const res = await fetch("/api/transcribe", {
         method: "POST",
