@@ -1,4 +1,4 @@
-import { AudioUploader } from "@/components/audio-uploader"
+import AudioUploader from "@/components/audio-uploader"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 
 export default function TranscriptionTool() {
