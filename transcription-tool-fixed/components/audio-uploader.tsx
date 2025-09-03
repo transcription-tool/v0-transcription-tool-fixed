@@ -1,291 +1,96 @@
 "use client"
 
-import { useState, useCallback } from "react"
-import { useDropzone } from "react-dropzone"
-import { Button } from "@/components/ui/button"
-import { Progress } from "@/components/ui/progress"
-import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Upload, File, X, CheckCircle, AlertCircle, Loader2 } from "lucide-react"
-import { cn } from "@/lib/utils"
-import { MindMap } from "./mind-map"
-import { ExportButtons } from "./export-buttons"
-import { AnalysisDashboard } from "./analysis-dashboard"
-import { TranscriptDisplay } from "./transcript-display"
-import { QADisplay } from "./qa-display"
+import { useState } from "react"
+import { upload } from "@vercel/blob/client"
 
-interface UploadedFile {
-  file: File
-  progress: number
-  status: "uploading" | "completed" | "error"
-  id: string
-}
-
-interface TranscriptionResult {
-  transcription: string
-  duration: number
-  wordCount: number
-  analysis: {
-    mainTopic: string
-    keyThemes: string[]
-    mainPoints: Array<{
-      point: string
-      details: string
-      arabicContent: string | null
-    }>
-    quranVerses: Array<{
-      verse: string
-      translation: string
-      reference: string
-    }>
-    hadiths: Array<{
-      arabic?: string
-      english: string
-      source: string
-    }>
-    qaSessions?: Array<{
-      question: string
-      answer: string
-      timestamp: string
-      category: string
-    }>
-    summary: string
-    mindMapStructure: {
-      centralTopic: string
-      branches: Array<{
-        title: string
-        subBranches: string[]
-      }>
-    }
-  }
-}
-
-export function AudioUploader() {
-  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
-  const [isProcessing, setIsProcessing] = useState(false)
-  const [transcriptionResult, setTranscriptionResult] = useState<TranscriptionResult | null>(null)
+export default function AudioUploader() {
+  const [file, setFile] = useState<File | null>(null)
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [result, setResult] = useState<any>(null)
+  const [glossary, setGlossary] = useState("Bukhari, Muslim, ihsan, iman, Islam, Jibril, sallallahu alayhi wa sallam")
 
-  const onDrop = useCallback((acceptedFiles: File[]) => {
-    const newFiles = acceptedFiles.map((file) => ({
-      file,
-      progress: 0,
-      status: "uploading" as const,
-      id: Math.random().toString(36).substr(2, 9),
-    }))
-
-    setUploadedFiles((prev) => [...prev, ...newFiles])
-    setError(null)
-
-    // Simulate upload progress
-    newFiles.forEach((uploadedFile) => {
-      simulateUpload(uploadedFile.id)
-    })
-  }, [])
-
-  const simulateUpload = (fileId: string) => {
-    const interval = setInterval(() => {
-      setUploadedFiles((prev) =>
-        prev.map((file) => {
-          if (file.id === fileId) {
-            const newProgress = Math.min(file.progress + Math.random() * 20, 100)
-            const newStatus = newProgress === 100 ? "completed" : "uploading"
-            return { ...file, progress: newProgress, status: newStatus }
-          }
-          return file
-        }),
-      )
-    }, 500)
-
-    setTimeout(() => {
-      clearInterval(interval)
-      setUploadedFiles((prev) =>
-        prev.map((file) => (file.id === fileId ? { ...file, progress: 100, status: "completed" } : file)),
-      )
-    }, 3000)
-  }
-
-  const removeFile = (fileId: string) => {
-    setUploadedFiles((prev) => prev.filter((file) => file.id !== fileId))
-  }
-
-  const startTranscription = async () => {
-    const completedFiles = uploadedFiles.filter((file) => file.status === "completed")
-    if (completedFiles.length === 0) return
-
-    setIsProcessing(true)
-    setError(null)
-
+  const handleUpload = async () => {
+    if (!file) return
+    setLoading(true); setError(null)
     try {
-      const formData = new FormData()
-      formData.append("audio", completedFiles[0].file)
+      // 1) Upload raw audio to Vercel Blob (handles large files, resumable)
+      const { url } = await upload(file.name, file, { access: "private" })
 
-      console.log("[v0] Starting transcription for file:", completedFiles[0].file.name)
-
-      const response = await fetch("/api/transcribe", {
+      // 2) Tell our API to process the Blob URL
+      const res = await fetch("/api/transcribe", {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, glossary }),
       })
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`)
-      }
-
-      const result = await response.json()
-      console.log("[v0] Transcription completed:", result)
-
-      if (result.success) {
-        setTranscriptionResult(result)
-      } else {
-        throw new Error(result.error || "Transcription failed")
-      }
-    } catch (err) {
-      console.error("[v0] Transcription error:", err)
-      setError(err instanceof Error ? err.message : "Failed to transcribe audio")
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || "Failed")
+      setResult(data)
+    } catch (e: any) {
+      setError(e.message)
     } finally {
-      setIsProcessing(false)
+      setLoading(false)
     }
   }
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop,
-    accept: {
-      "audio/*": [".mp3", ".wav", ".m4a"],
-      "video/*": [".mp4", ".mov"],
-    },
-    maxSize: 2 * 1024 * 1024 * 1024, // 2GB
-    multiple: true,
-  })
+  const download = async (kind: "txt"|"summary"|"analysis"|"slides"|"mindmap") => {
+    if (!result) return
+    let body: any = {}
+    if (kind === "txt") body = { transcript: result.transcript }
+    if (kind === "summary") body = { transcript: result.transcript, summary: result.analysis?.summary || "" }
+    if (kind === "analysis") body = { transcript: result.transcript, analysis: result.analysis || {} }
+    if (kind === "slides") body = { transcript: result.transcript, analysis: result.analysis || {} }
+    if (kind === "mindmap") body = { root: { label: "Lecture", children: (result.analysis?.bullets||[]).slice(0,6).map((b:string)=>({label:b})) } }
 
-  const completedFiles = uploadedFiles.filter((file) => file.status === "completed")
-  const hasCompletedFiles = completedFiles.length > 0
-
-  if (transcriptionResult) {
-    return (
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Transcription Complete</h3>
-            <div className="flex items-center gap-4 mt-1 text-sm text-slate-600 dark:text-slate-400">
-              <span>Duration: {transcriptionResult.duration} minutes</span>
-              <span>•</span>
-              <span>Words: {transcriptionResult.wordCount.toLocaleString()}</span>
-            </div>
-          </div>
-          <Button
-            variant="outline"
-            onClick={() => {
-              setTranscriptionResult(null)
-              setUploadedFiles([])
-            }}
-          >
-            New Transcription
-          </Button>
-        </div>
-
-        <AnalysisDashboard data={transcriptionResult} />
-
-        <TranscriptDisplay transcription={transcriptionResult.transcription} className="mb-6" />
-
-        {transcriptionResult.analysis.qaSessions && transcriptionResult.analysis.qaSessions.length > 0 && (
-          <QADisplay qaSessions={transcriptionResult.analysis.qaSessions} className="mb-6" />
-        )}
-
-        <MindMap data={transcriptionResult.analysis.mindMapStructure} className="mb-6" />
-
-        <ExportButtons data={transcriptionResult} />
-
-        <div className="bg-white dark:bg-slate-900 rounded-lg p-4 border">
-          <h4 className="font-medium text-slate-900 dark:text-slate-100 mb-2">Summary</h4>
-          <p className="text-sm text-slate-600 dark:text-slate-300">{transcriptionResult.analysis.summary}</p>
-        </div>
-      </div>
-    )
+    const res = await fetch(`/api/export/${kind}`, { method:"POST", body: JSON.stringify(body)})
+    if (!res.ok) { alert("Export failed"); return }
+    const blob = await res.blob()
+    const a = document.createElement("a")
+    a.href = URL.createObjectURL(blob)
+    a.download = kind === "txt" ? "transcript.txt"
+      : kind === "summary" ? "summary.docx"
+      : kind === "analysis" ? "analysis.docx"
+      : kind === "slides" ? "slides.pptx"
+      : "mindmap.png"
+    a.click()
   }
 
   return (
-    <div className="space-y-6">
-      {/* Drop Zone */}
-      <div
-        {...getRootProps()}
-        className={cn(
-          "border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors",
-          isDragActive
-            ? "border-blue-500 bg-blue-50 dark:bg-blue-950/20"
-            : "border-slate-300 dark:border-slate-600 hover:border-blue-400 dark:hover:border-blue-500",
-        )}
-      >
-        <input {...getInputProps()} />
-        <Upload className="mx-auto h-12 w-12 text-slate-400 dark:text-slate-500 mb-4" />
-        <p className="text-lg font-medium text-slate-700 dark:text-slate-300 mb-2">
-          {isDragActive ? "Drop files here..." : "Drag & drop audio files here"}
-        </p>
-        <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-          Supports MP3, MP4, WAV, M4A files up to 2GB each
-        </p>
-        <Button variant="outline" className="mt-2 bg-transparent">
-          Browse Files
-        </Button>
+    <div className="space-y-4">
+      <div className="rounded-xl border p-4">
+        <label className="block text-sm font-medium mb-2">Upload audio (MP3/WAV up to 2GB)</label>
+        <input type="file" accept="audio/*" onChange={e=>setFile(e.target.files?.[0] || null)} />
+        <label className="block text-sm font-medium mt-4">Glossary (Arabic/Islamic terms)</label>
+        <textarea className="w-full p-2 mt-1 rounded border bg-transparent" rows={3} value={glossary} onChange={e=>setGlossary(e.target.value)} />
+        <button disabled={!file || loading} onClick={handleUpload} className="mt-3 rounded-lg px-4 py-2 bg-black text-white disabled:opacity-50">
+          {loading ? "Transcribing..." : "Transcribe"}
+        </button>
+        {error && <p className="text-red-500 mt-2">{error}</p>}
       </div>
 
-      {/* File List */}
-      {uploadedFiles.length > 0 && (
-        <div className="space-y-3">
-          <h3 className="font-medium text-slate-900 dark:text-slate-100">Uploaded Files</h3>
-          {uploadedFiles.map((uploadedFile) => (
-            <div key={uploadedFile.id} className="flex items-center gap-3 p-3 bg-slate-50 dark:bg-slate-800 rounded-lg">
-              <File className="h-5 w-5 text-slate-500 dark:text-slate-400 flex-shrink-0" />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">
-                  {uploadedFile.file.name}
-                </p>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  {(uploadedFile.file.size / (1024 * 1024)).toFixed(1)} MB
-                </p>
-                {uploadedFile.status === "uploading" && <Progress value={uploadedFile.progress} className="mt-2 h-1" />}
-              </div>
-              <div className="flex items-center gap-2">
-                {uploadedFile.status === "completed" && <CheckCircle className="h-5 w-5 text-green-500" />}
-                {uploadedFile.status === "error" && <AlertCircle className="h-5 w-5 text-red-500" />}
-                <Button variant="ghost" size="sm" onClick={() => removeFile(uploadedFile.id)} className="h-8 w-8 p-0">
-                  <X className="h-4 w-4" />
-                </Button>
-              </div>
+      {result && (
+        <div className="grid md:grid-cols-2 gap-4">
+          <div className="rounded-xl border p-4">
+            <h3 className="font-semibold mb-2">Transcript</h3>
+            <pre className="whitespace-pre-wrap text-sm leading-6">{result.transcript}</pre>
+          </div>
+          <div className="rounded-xl border p-4 space-y-2">
+            <h3 className="font-semibold">Analysis</h3>
+            <p className="text-sm opacity-80">{result.analysis?.summary}</p>
+            <ul className="list-disc pl-5 text-sm">
+              {(result.analysis?.bullets||[]).map((b:string,i:number)=>(<li key={i}>{b}</li>))}
+            </ul>
+            <div className="flex flex-wrap gap-2 pt-2">
+              <button className="px-3 py-2 rounded-lg border" onClick={()=>download("txt")}>Download TXT</button>
+              <button className="px-3 py-2 rounded-lg border" onClick={()=>download("summary")}>Summary DOCX</button>
+              <button className="px-3 py-2 rounded-lg border" onClick={()=>download("analysis")}>Analysis DOCX</button>
+              <button className="px-3 py-2 rounded-lg border" onClick={()=>download("slides")}>Slides PPTX</button>
+              <button className="px-3 py-2 rounded-lg border" onClick={()=>download("mindmap")}>Mindmap PNG</button>
             </div>
-          ))}
+          </div>
         </div>
       )}
-
-      {/* Action Buttons */}
-      {hasCompletedFiles && (
-        <div className="flex gap-3">
-          <Button onClick={startTranscription} disabled={isProcessing} className="flex-1">
-            {isProcessing ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Processing...
-              </>
-            ) : (
-              `Start Transcription (${completedFiles.length} file${completedFiles.length > 1 ? "s" : ""})`
-            )}
-          </Button>
-        </div>
-      )}
-
-      {error && (
-        <Alert variant="destructive">
-          <AlertCircle className="h-4 w-4" />
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
-
-      {/* Info Alert */}
-      <Alert>
-        <AlertCircle className="h-4 w-4" />
-        <AlertDescription>
-          For best results with mixed English-Arabic content, ensure clear audio quality. The AI is optimized to
-          recognize Quranic verses, hadiths, and Arabic phrases within English speech.
-        </AlertDescription>
-      </Alert>
     </div>
   )
 }
+
